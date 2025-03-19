@@ -6,14 +6,6 @@
 ;; Thanks to Vince Buffalo, this began as an adaptation from his vim mode.
 ;; https://github.com/vsbuffalo/eidos.vim/blob/master/syntax/eidos.vim
 
-;; TODO: indentation code...
-;; https://github.com/dominikh/go-mode.el/blob/master/go-mode.el
-;; https://www.omarpolo.com/post/writing-a-major-mode.html
-;; https://www.emacswiki.org/emacs/ModeTutorial
-;; https://stackoverflow.com/questions/22989800/creating-emacs-mode-defining-indentation
-;; https://www.emacswiki.org/emacs/IndentationBasics
-
-
 ;;; Code:
 (require 'font-lock)
 
@@ -33,8 +25,8 @@
     (modify-syntax-entry ?= "." table) ;; assignment
     (modify-syntax-entry ?+ "." table) ;; unary +
     (modify-syntax-entry ?- "." table) ;; unary -
-    (modify-syntax-entry ?* "." table)
-    (modify-syntax-entry ?/ "." table)
+    ;; (modify-syntax-entry ?* "." table)
+    ;; (modify-syntax-entry ?/ "." table)
     (modify-syntax-entry ?% "." table)
     (modify-syntax-entry ?^ "." table) ;; exponentiation
     (modify-syntax-entry ?: "." table) ;; sequence construction
@@ -238,8 +230,9 @@
 (defvar eidos-keywords
   '("if" "else" "while" "do" "for" "in" "next" "break" "return" "function"))
 
-;; (defvar eidos-number-regexp
-;;   "\\_<[0-9]+\\_>\\|\\_<[0-9]+\\.[0-9]+\\_>\\|\\_<[0-9]*\\.?[0-9]+[Ee-]?[0-9]+\\_>")
+(defvar eidos-number-regexp
+  "\\_<[0-9]+\\_>\\|\\_<[0-9]+\\.[0-9]+\\_>\\|\\_<[0-9]*\\.?[0-9]+[Ee-]?[0-9]+\\_>")
+
 (defvar eidos-boolean-regexp "\\_<\\(T\\|F\\|NULL\\)\\_>")
 
 (setq eidos-font-lock-keywords
@@ -261,13 +254,6 @@
  (setq-local font-lock-defaults '(eidos-font-lock-keywords))
  (setq-local comment-start "// "))
 
-
-(defun eidos-opening ()
-  "Are we pointing at an opening character?  Either a { or (.
-Allows for trailing comments/nonprinting"
-  (looking-at
-   "^.*\\((\\|{\\)[ \t]*\\(\\(//.*\\)\\|\\(/\\*.*\\*/\\)\\)?[ \t]*$"))
-
 (defun eidos-else-openclose ()
   "Are we in an else block that closes and opens?
 This would be considered a \"close\" brace. We allow for arbitrary tabs
@@ -281,103 +267,49 @@ Allows for trailing comments/nonprinting"
   (looking-at
    "^[ \t]*\\()\\|}\\|);\\)[ \t]*\\(\\(//.*\\)\\|\\(/\\*.*\\*/\\)\\)?[ \t]*$"))
 
-;; (defun my-in-function-arguments-p ()
-;;   "Check if the point is inside function call arguments."
-;;   (save-excursion
-;;     (let ((pos (point)))
-;;       (when (re-search-backward "([^(]*" (line-beginning-position) t)
-;;         (looking-at "(")))))
+(defun eidos-fundepth-correction ()
+  "Find lines with multiple open parens that haven't been closed."
+  (save-excursion
+    (let ((pos (point))
+          (last-line (line-number-at-pos))
+          (corr 0))
+      (while-let ((pos-last-open (nth 1 (syntax-ppss pos))))
+        (when (= (char-after pos-last-open) ?\()
+          (let ((tmp (line-number-at-pos pos-last-open)))
+            (when (= tmp last-line)
+              (setq corr (1+ corr)))
+            (setq last-line tmp)))
+        (setq pos pos-last-open))
+      corr)))
 
-(defun match-ivls (regexp str pos)
-  (let (matches)
-    (while (string-match regexp str pos)
-      (push (match-data) matches)
-      (setq pos (match-end 0)))
-    (reverse matches)))
-
-(defun invert-selection (pairs len)
-  (let ((last '(nil 0))
-        (pairs
-         (if (= len (cadr (car (last pairs))))
-             pairs
-           (append pairs `((,len nil))))))
-    (seq-map
-     (lambda (p)
-       (let (tmp)
-         (setq tmp last)
-         (setq last p)
-         `(,(cadr tmp) ,(car p))))
-     pairs)))
-
-;; TODO: consider getting rid of substring calls, they make copies. Can avoid
-;;       copying buffer strings by
-(defun eidos-line-funcall-level (line)
-  "Determine the current funcall level for the given LINE."
-  (let* (in-comment
-         (len
-          (cond
-           ((string-match "//" line)
-            (match-beginning 0))
-           ((string-match "/\\*" line)
-            (setq in-comment t)
-            (match-beginning 0))
-           (t
-            (length line))))
-         (pmatch
-          (seq-map
-           (lambda (p)
-             (- (length (match-ivls "(" (substring line (car p) (cadr p)) 0))
-                (length (match-ivls ")" (substring line (car p) (cadr p)) 0))))
-           (if-let (m
-                    (match-ivls "/\\*.*?\\*/" line 0))
-             (invert-selection m len)
-             `((0 ,len))))))
-    `(,(apply #'+ pmatch) ,in-comment)))
-;; TODO: do something with in-comment?
-
-;; (defun my-get-first-arg-indent ()
-;;   "Return indentation level based on the first argument of a function call."
-;;   (save-excursion
-;;     (re-search-backward "(" (line-beginning-position) t)
-;;     (forward-char)
-;;     (skip-chars-forward " \t")
-;;     (current-column)))
-
-;; (defun my-calculate-block-indent ()
-;;   "Default block indentation logic."
-;;   (save-excursion
-;;     (forward-line -1)
-;;     (if (looking-at ".*{")
-;;         (+ (current-indentation) tab-width)
-;;       (current-indentation))))
+(defun eidos-hanging-indent ()
+  "Find open parens with non comment characters after, return col of args."
+  (save-excursion
+    (when-let ((curr-line (line-number-at-pos))
+               (last-paren-open (nth 1 (syntax-ppss))))
+      (goto-char last-paren-open)
+      (unless (eobp)
+        (forward-char 1)
+        (when (not (= curr-line (line-number-at-pos)))
+          (skip-chars-forward " \t")
+          (when (and (not (= (point) (line-end-position)))
+                     (not (= (char-after (point)) ?/)))
+            (current-column)))))))
 
 (defun eidos-indent-line ()
-  "Indent the current line.  Perhaps one day we'll have an eidos-indent-region."
+  "Indent the current line."
+  ;; no need to save-excursion, indent-line-to moves cursor
   (beginning-of-line)
-  (let ((not-indented t)
-        (cur-indent 0))
-    (save-excursion
-      (cond
-       ((bobp)
-        (indent-line-to 0))
-       ((or (eidos-closing) (eidos-else-openclose))
-        (forward-line -1)
-        (setq cur-indent (max 0 (- (current-indentation) tab-width))))
-       (t
-        (while not-indented
-          (forward-line -1)
-          (cond
-           ((eidos-closing)
-            (setq cur-indent (current-indentation))
-            (setq not-indented nil))
-           ((eidos-opening)
-            (setq cur-indent (+ (current-indentation) tab-width))
-            (setq not-indented nil))
-           ((bobp)
-            (setq not-indented nil)))))))
-    (if cur-indent
-        (indent-line-to cur-indent)
-      (indent-line-to 0))))
+  (let ((depth (syntax-ppss-depth (syntax-ppss)))
+        (corr (eidos-fundepth-correction)))
+    (cond
+     ((or (eidos-closing) (eidos-else-openclose))
+      (indent-line-to (* (1- depth) tab-width)))
+     (t
+      (if-let ((hanging (eidos-hanging-indent)))
+        ;; if we ever want to mix in tabs, this could be bad?
+        (indent-line-to hanging)
+        (indent-line-to (* (- depth corr) tab-width)))))))
 
 (provide 'eidos-mode)
 ;;; eidos-mode.el ends here
